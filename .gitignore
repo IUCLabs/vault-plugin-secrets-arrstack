@@ -1,0 +1,5 @@
+/dist/
+/vault-plugin-secrets-arrstack
+*.out
+*.test
+.env
