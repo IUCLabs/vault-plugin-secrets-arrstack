@@ -3,6 +3,7 @@ package arrstack
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -33,6 +34,7 @@ func getTestBackend(t *testing.T) (*arrstackBackend, logical.Storage) {
 type mockToken struct {
 	Subject   string
 	Apps      []string
+	Methods   []string
 	Label     string
 	ExpiresAt *time.Time
 	Disabled  bool
@@ -49,9 +51,13 @@ type mockArrproxy struct {
 	counter    int
 	adminToken string
 	apps       map[string]bool
+	methods    map[string]bool
 
-	mintErr     bool
+	mintErr bool
+	// lastRequest is the decoded mint payload; lastBody is the raw JSON, so a
+	// test can assert a field was omitted rather than sent empty.
 	lastRequest mintTokenRequest
+	lastBody    []byte
 }
 
 func newMockArrproxy(t *testing.T) *mockArrproxy {
@@ -60,6 +66,10 @@ func newMockArrproxy(t *testing.T) *mockArrproxy {
 		tokens:     make(map[string]*mockToken),
 		adminToken: "arrproxy-admin-secret",
 		apps:       map[string]bool{"sonarr": true, "radarr": true, "prowlarr": true},
+		methods: map[string]bool{
+			"GET": true, "HEAD": true, "POST": true, "PUT": true,
+			"PATCH": true, "DELETE": true, "OPTIONS": true,
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -108,12 +118,18 @@ func (m *mockArrproxy) handleMint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	var req mintTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	m.lastRequest = req
+	m.lastBody = body
 
 	if !strings.HasPrefix(req.Subject, "vault:arrstack:") || strings.TrimSpace(strings.TrimPrefix(req.Subject, "vault:arrstack:")) == "" {
 		http.Error(w, "subject must be namespaced with vault:arrstack:", http.StatusBadRequest)
@@ -129,6 +145,13 @@ func (m *mockArrproxy) handleMint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An absent or empty methods list is unrestricted.
+	for _, meth := range req.Methods {
+		if !m.methods[meth] {
+			http.Error(w, "methods must name known HTTP methods", http.StatusBadRequest)
+			return
+		}
+	}
 	if req.TTLSeconds < 0 {
 		http.Error(w, "ttl_seconds must not be negative", http.StatusBadRequest)
 		return
@@ -141,9 +164,14 @@ func (m *mockArrproxy) handleMint(w http.ResponseWriter, r *http.Request) {
 		exp := time.Now().UTC().Add(time.Duration(req.TTLSeconds) * time.Second)
 		expiresAt = &exp
 	}
+	methods := req.Methods
+	if methods == nil {
+		methods = []string{}
+	}
 	m.tokens[id] = &mockToken{
 		Subject:   req.Subject,
 		Apps:      req.Apps,
+		Methods:   methods,
 		Label:     req.Label,
 		ExpiresAt: expiresAt,
 	}
@@ -151,6 +179,7 @@ func (m *mockArrproxy) handleMint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":         id,
 		"token":      "arr_" + id + "_plaintext",
+		"methods":    methods,
 		"expires_at": expiresAt,
 	})
 }

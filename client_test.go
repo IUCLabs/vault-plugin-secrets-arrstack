@@ -2,6 +2,7 @@ package arrstack
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,38 @@ func TestClient_MintToken(t *testing.T) {
 	}
 	if m.lastRequest.Subject != "vault:arrstack:media" {
 		t.Fatalf("expected subject forwarded, got %q", m.lastRequest.Subject)
+	}
+}
+
+func TestClient_MintToken_ForwardsMethods(t *testing.T) {
+	m := newMockArrproxy(t)
+	client, _ := newClient(&arrstackConfig{BaseURL: m.server.URL, AdminToken: m.adminToken})
+
+	if _, err := client.MintToken(context.Background(), mintTokenRequest{
+		Subject:    "vault:arrstack:readonly",
+		Apps:       []string{"sonarr"},
+		Methods:    []string{"GET", "HEAD"},
+		TTLSeconds: 60,
+	}); err != nil {
+		t.Fatalf("MintToken: %v", err)
+	}
+	if strings.Join(m.lastRequest.Methods, ",") != "GET,HEAD" {
+		t.Fatalf("expected methods forwarded, got %v", m.lastRequest.Methods)
+	}
+}
+
+func TestClient_MintToken_RejectsUnknownMethod(t *testing.T) {
+	m := newMockArrproxy(t)
+	client, _ := newClient(&arrstackConfig{BaseURL: m.server.URL, AdminToken: m.adminToken})
+
+	_, err := client.MintToken(context.Background(), mintTokenRequest{
+		Subject:    "vault:arrstack:readonly",
+		Apps:       []string{"sonarr"},
+		Methods:    []string{"FETCH"},
+		TTLSeconds: 60,
+	})
+	if err == nil {
+		t.Fatal("expected arrproxy to reject an unknown HTTP method")
 	}
 }
 

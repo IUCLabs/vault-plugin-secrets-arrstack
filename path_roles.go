@@ -3,7 +3,9 @@ package arrstack
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
@@ -20,10 +22,21 @@ var knownApps = map[string]bool{
 	"prowlarr": true,
 }
 
+// knownMethods mirrors arrproxy's accepted HTTP method scope. Validating here
+// rejects a typo at role write instead of at mint.
+var knownMethods = map[string]bool{
+	http.MethodGet: true, http.MethodHead: true, http.MethodPost: true,
+	http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true,
+	http.MethodOptions: true,
+}
+
 // arrstackRole constrains the machine tokens minted from the creds/<name> path.
 type arrstackRole struct {
 	// Apps is the subset of sonarr/radarr/prowlarr a minted token may reach.
 	Apps []string `json:"apps"`
+	// Methods, when non-empty, limits a minted token to those HTTP methods.
+	// Empty means unrestricted.
+	Methods []string `json:"methods,omitempty"`
 	// TTL is the default lease duration for tokens issued from this role.
 	TTL time.Duration `json:"ttl"`
 	// MaxTTL is the maximum lease duration for tokens issued from this role.
@@ -33,6 +46,7 @@ type arrstackRole struct {
 func (r *arrstackRole) toResponseData() map[string]interface{} {
 	return map[string]interface{}{
 		"apps":    r.Apps,
+		"methods": r.Methods,
 		"ttl":     int64(r.TTL.Seconds()),
 		"max_ttl": int64(r.MaxTTL.Seconds()),
 	}
@@ -59,6 +73,28 @@ func validateApps(requested []string) ([]string, error) {
 	return out, nil
 }
 
+// validateMethods uppercase-normalizes, de-duplicates and sorts a requested
+// method scope. An empty request yields a nil scope, meaning unrestricted.
+func validateMethods(requested []string) ([]string, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(requested))
+	for _, m := range requested {
+		m = strings.ToUpper(strings.TrimSpace(m))
+		if !knownMethods[m] {
+			return nil, fmt.Errorf("unknown method %q: methods must be a subset of GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS", m)
+		}
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func pathRole(b *arrstackBackend) *framework.Path {
 	return &framework.Path{
 		Pattern: "roles/" + framework.GenericNameRegex("name"),
@@ -76,6 +112,10 @@ func pathRole(b *arrstackBackend) *framework.Path {
 				Type:        framework.TypeCommaStringSlice,
 				Description: "Comma-separated subset of sonarr/radarr/prowlarr a minted token may reach.",
 				Required:    true,
+			},
+			"methods": {
+				Type:        framework.TypeCommaStringSlice,
+				Description: "Optional comma-separated HTTP methods a minted token is limited to (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS). Empty means unrestricted.",
 			},
 			"ttl": {
 				Type:        framework.TypeDurationSecond,
@@ -170,6 +210,13 @@ func (b *arrstackBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 			return logical.ErrorResponse(err.Error()), nil
 		}
 		role.Apps = apps
+	}
+	if v, ok := data.GetOk("methods"); ok {
+		methods, err := validateMethods(v.([]string))
+		if err != nil {
+			return logical.ErrorResponse(err.Error()), nil
+		}
+		role.Methods = methods
 	}
 	if v, ok := data.GetOk("ttl"); ok {
 		role.TTL = time.Duration(v.(int)) * time.Second

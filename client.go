@@ -63,8 +63,11 @@ func newClient(config *arrstackConfig) (*arrproxyClient, error) {
 // mintTokenRequest is the payload for POST /api/admin/tokens. The subject MUST
 // carry the "vault:arrstack:" prefix or arrproxy rejects the request.
 type mintTokenRequest struct {
-	Subject    string   `json:"subject"`
-	Apps       []string `json:"apps"`
+	Subject string   `json:"subject"`
+	Apps    []string `json:"apps"`
+	// Methods limits the token to those HTTP methods. Omitted when empty so
+	// arrproxy versions predating method scoping see the request unchanged.
+	Methods    []string `json:"methods,omitempty"`
 	Label      string   `json:"label"`
 	TTLSeconds int64    `json:"ttl_seconds"`
 }

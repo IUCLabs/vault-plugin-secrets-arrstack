@@ -75,6 +75,7 @@ func (b *arrstackBackend) mintToken(ctx context.Context, req *logical.Request, r
 	minted, err := client.MintToken(ctx, mintTokenRequest{
 		Subject:    subject,
 		Apps:       role.Apps,
+		Methods:    role.Methods,
 		Label:      label,
 		TTLSeconds: int64(ttl.Seconds()),
 	})
@@ -98,6 +99,7 @@ func (b *arrstackBackend) mintToken(ctx context.Context, req *logical.Request, r
 		"token":      minted.Token,
 		"id":         minted.ID,
 		"apps":       role.Apps,
+		"methods":    role.Methods,
 		"subject":    subject,
 		"expires_at": expiresAt.Format(time.RFC3339),
 	}

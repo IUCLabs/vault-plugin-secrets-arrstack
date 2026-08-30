@@ -93,6 +93,63 @@ func TestCredentials_MintAndRevoke(t *testing.T) {
 	}
 }
 
+func TestCredentials_MethodsForwardedAndEchoed(t *testing.T) {
+	b, s := getTestBackend(t)
+	m := newMockArrproxy(t)
+	writeTestConfig(t, b, s, m.server.URL, m.adminToken)
+	createRole(t, b, s, "readonly", map[string]interface{}{
+		"apps":    "sonarr",
+		"methods": "head,get",
+		"ttl":     "1h",
+	})
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "creds/readonly",
+		Storage:   s,
+	})
+	if err != nil || resp == nil {
+		t.Fatalf("mint creds: err=%v resp=%v", err, resp)
+	}
+
+	// The role's normalized method scope reached arrproxy.
+	if strings.Join(m.lastRequest.Methods, ",") != "GET,HEAD" {
+		t.Fatalf("expected methods GET,HEAD forwarded, got %v", m.lastRequest.Methods)
+	}
+	// And is echoed back to the caller alongside apps/subject.
+	if strings.Join(resp.Data["methods"].([]string), ",") != "GET,HEAD" {
+		t.Fatalf("expected methods echoed in creds response, got %v", resp.Data["methods"])
+	}
+}
+
+func TestCredentials_NoMethodsOmitsTheField(t *testing.T) {
+	b, s := getTestBackend(t)
+	m := newMockArrproxy(t)
+	writeTestConfig(t, b, s, m.server.URL, m.adminToken)
+	createRole(t, b, s, "media", map[string]interface{}{"apps": "sonarr", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "creds/media",
+		Storage:   s,
+	})
+	if err != nil || resp == nil {
+		t.Fatalf("mint creds: err=%v resp=%v", err, resp)
+	}
+
+	// An unscoped role sends no methods key at all, so an arrproxy predating
+	// method scoping sees the request exactly as before.
+	if strings.Contains(string(m.lastBody), "methods") {
+		t.Fatalf("expected methods omitted from the mint body, got %s", m.lastBody)
+	}
+	if len(m.lastRequest.Methods) != 0 {
+		t.Fatalf("expected no methods forwarded, got %v", m.lastRequest.Methods)
+	}
+	if methods, ok := resp.Data["methods"].([]string); ok && len(methods) != 0 {
+		t.Fatalf("expected an empty method scope in the response, got %v", methods)
+	}
+}
+
 func TestCredentials_UnknownRole(t *testing.T) {
 	b, s := getTestBackend(t)
 	m := newMockArrproxy(t)

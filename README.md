@@ -13,6 +13,8 @@ bearer-gated **admin API** (`/api/admin/tokens`) instead, so Terraform-driven
 Each minted token is:
 
 - **scoped to a subset of apps** (`apps`: any of `sonarr`, `radarr`, `prowlarr`)
+- **optionally scoped to HTTP methods** (`methods`, e.g. `GET,HEAD` for a
+  read-only consumer; empty means unrestricted)
 - **subject-namespaced** as `vault:arrstack:<role>` (arrproxy requires the prefix)
 - **bound to a Vault lease** — revoking the lease disables the token in arrproxy
 
@@ -49,6 +51,7 @@ vault write arrstack/config \
   ca_cert=@traefik-external-ca.pem   # optional
 
 # 3. Define a role: which apps, what TTLs
+#    (add methods="GET,HEAD" to pin the token to those HTTP methods)
 vault write arrstack/roles/media \
   apps="sonarr,radarr" \
   ttl=1h \
@@ -61,6 +64,7 @@ vault read arrstack/creds/media
 # lease_id      arrstack/creds/media/AbC...
 # lease_duration 1h
 # apps          [radarr sonarr]
+# methods       []
 # id            tok-...
 # subject       vault:arrstack:media
 # token         arr_...
@@ -108,8 +112,29 @@ vault write arrstack/roles/all      apps="sonarr,radarr,prowlarr"   ttl=1h max_t
 | Field     | Type     | Description                                                         |
 | --------- | -------- | ------------------------------------------------------------------ |
 | `apps`    | list     | Non-empty subset of `sonarr`/`radarr`/`prowlarr`                   |
+| `methods` | list     | Optional HTTP methods the token is limited to; empty = unrestricted |
 | `ttl`     | duration | Default lease TTL                                                   |
 | `max_ttl` | duration | Maximum lease TTL                                                   |
+
+## Method scoping
+
+A role may pin its tokens to a set of HTTP methods, so a read-only integration
+cannot write to the *arr even on an app it is allowed to reach. Entries are
+uppercase-normalized and must name one of `GET`, `HEAD`, `POST`, `PUT`,
+`PATCH`, `DELETE`, `OPTIONS` — an unknown method is rejected at role write, not
+at mint. The scope is sent to arrproxy at mint time and enforced there: a
+request outside it is refused with `405` before any upstream *arr is reached.
+
+Leaving `methods` unset (the default) leaves the token unrestricted, exactly as
+before this field existed.
+
+```sh
+# A token that can read Sonarr but never change it.
+vault write arrstack/roles/sonarr-ro apps="sonarr" methods="GET,HEAD" ttl=1h max_ttl=24h
+
+# Drop the scope again on an existing role.
+vault write arrstack/roles/sonarr-ro methods=""
+```
 
 ## TTL and renewal
 

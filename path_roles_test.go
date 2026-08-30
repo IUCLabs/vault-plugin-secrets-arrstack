@@ -2,6 +2,7 @@ package arrstack
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/vault/sdk/logical"
@@ -145,6 +146,134 @@ func TestRole_TTLGreaterThanMaxTTLRejected(t *testing.T) {
 	}
 	if resp == nil || !resp.IsError() {
 		t.Fatal("expected error when ttl > max_ttl")
+	}
+}
+
+func TestRole_MethodsStoredNormalized(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/readonly",
+		Storage:   s,
+		Data: map[string]interface{}{
+			"apps":    "sonarr",
+			"methods": "get, head ,GET",
+		},
+	})
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("write role: err=%v resp=%v", err, resp)
+	}
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "roles/readonly",
+		Storage:   s,
+	})
+	if err != nil || resp == nil {
+		t.Fatalf("read role: err=%v resp=%v", err, resp)
+	}
+	methods := resp.Data["methods"].([]string)
+	// Uppercased, de-duplicated and sorted.
+	if strings.Join(methods, ",") != "GET,HEAD" {
+		t.Fatalf("unexpected methods: %v", methods)
+	}
+}
+
+func TestRole_MethodsDefaultEmpty(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/unrestricted",
+		Storage:   s,
+		Data:      map[string]interface{}{"apps": "sonarr"},
+	})
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("write role: err=%v resp=%v", err, resp)
+	}
+
+	role, _ := b.getRole(ctx, s, "unrestricted")
+	if len(role.Methods) != 0 {
+		t.Fatalf("expected no method scope by default, got %v", role.Methods)
+	}
+}
+
+func TestRole_UnknownMethodRejected(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/bad",
+		Storage:   s,
+		Data:      map[string]interface{}{"apps": "sonarr", "methods": "GET,FETCH"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected an error for a method outside the known HTTP set")
+	}
+	role, _ := b.getRole(context.Background(), s, "bad")
+	if role != nil {
+		t.Fatal("expected the role not to be stored when methods are invalid")
+	}
+}
+
+func TestRole_MethodsClearedOnUpdate(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	createRole(t, b, s, "media", map[string]interface{}{"apps": "sonarr", "methods": "GET"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "roles/media",
+		Storage:   s,
+		Data:      map[string]interface{}{"methods": ""},
+	})
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("update role: err=%v resp=%v", err, resp)
+	}
+	role, _ := b.getRole(ctx, s, "media")
+	if len(role.Methods) != 0 {
+		t.Fatalf("expected methods cleared, got %v", role.Methods)
+	}
+	if len(role.Apps) != 1 {
+		t.Fatalf("expected apps preserved across the update, got %v", role.Apps)
+	}
+}
+
+func TestValidateMethods(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      []string
+		want    []string
+		wantErr bool
+	}{
+		{"empty is unrestricted", nil, nil, false},
+		{"lowercase normalized", []string{"get"}, []string{"GET"}, false},
+		{"trimmed dedup and sort", []string{" head ", "GET", "head"}, []string{"GET", "HEAD"}, false},
+		{"all known", []string{"OPTIONS", "DELETE", "PATCH", "PUT", "POST", "HEAD", "GET"},
+			[]string{"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}, false},
+		{"unknown", []string{"GET", "FETCH"}, nil, true},
+		{"empty entry", []string{""}, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateMethods(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateMethods err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
 	}
 }
 
