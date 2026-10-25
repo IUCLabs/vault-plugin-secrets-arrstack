@@ -41,6 +41,13 @@ steps:
       - |
         HOST="https://artifactapi.k8s.syd1.au.unkin.net"
         REPO="rpm-internal"
+        set -o pipefail
+        VAULT="https://vault.service.consul:8200"
+        AUTH=$$(mktemp)
+        VT=$$(jq -n --rawfile jwt /var/run/secrets/kubernetes.io/serviceaccount/token '{role:"woodpecker_artifactapi_writer",jwt:$$jwt}' \
+          | curl -sf -d @- "$$VAULT/v1/auth/k8s/au/syd1/login" | jq -er .auth.client_token) || exit 1
+        printf 'X-Vault-Token: %s\n' "$$VT" | curl -sf -H @- "$$VAULT/v1/identity/oidc/token/artifactapi-writer" \
+          | jq -er '"Authorization: Bearer " + .data.token' > "$$AUTH" || exit 1
         for rpm in dist/*.rpm; do
           FILE=$$(basename "$$rpm")
           # Verify the package isn't already published before uploading.
@@ -54,7 +61,7 @@ steps:
           echo "Uploading $$FILE to $$REPO (existence probe returned $$code)"
           curl -f -X PUT \
             "$$HOST/api/v2/remotes/$$REPO/files/$$FILE" \
-            -H "Content-Type: application/x-rpm" \
+            -H "Content-Type: application/x-rpm" -H @"$$AUTH" \
             --data-binary @"$$rpm"
         done
     depends_on: [package]
