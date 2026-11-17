@@ -16,7 +16,7 @@ func TestConfig_WriteReadDelete(t *testing.T) {
 		Path:      "config",
 		Storage:   s,
 		Data: map[string]interface{}{
-			"base_url":                "https://arrstack.unkin.net",
+			"base_url":                "https://arrproxy.example.com",
 			"admin_token":             "arrproxy-admin-secret",
 			"ca_cert":                 "",
 			"request_timeout_seconds": 15,
@@ -35,7 +35,7 @@ func TestConfig_WriteReadDelete(t *testing.T) {
 	if err != nil || resp == nil {
 		t.Fatalf("read config: err=%v resp=%v", err, resp)
 	}
-	if resp.Data["base_url"] != "https://arrstack.unkin.net" {
+	if resp.Data["base_url"] != "https://arrproxy.example.com" {
 		t.Fatalf("unexpected base_url: %v", resp.Data["base_url"])
 	}
 	if resp.Data["request_timeout_seconds"] != 15 {
@@ -69,7 +69,7 @@ func TestConfig_RequiredFields(t *testing.T) {
 		Operation: logical.CreateOperation,
 		Path:      "config",
 		Storage:   s,
-		Data:      map[string]interface{}{"base_url": "https://arrstack.unkin.net"},
+		Data:      map[string]interface{}{"base_url": "https://arrproxy.example.com"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -83,7 +83,7 @@ func TestConfig_DefaultTimeout(t *testing.T) {
 	b, s := getTestBackend(t)
 	ctx := context.Background()
 
-	writeTestConfig(t, b, s, "https://arrstack.unkin.net", "arrproxy-admin-secret")
+	writeTestConfig(t, b, s, "https://arrproxy.example.com", "arrproxy-admin-secret")
 
 	cfg, err := getConfig(ctx, s)
 	if err != nil {

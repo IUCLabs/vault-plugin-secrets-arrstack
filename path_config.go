@@ -28,7 +28,7 @@ func pathConfig(b *arrstackBackend) *framework.Path {
 		Fields: map[string]*framework.FieldSchema{
 			"base_url": {
 				Type:        framework.TypeString,
-				Description: "Base URL of the arrproxy deployment, e.g. https://arrstack.unkin.net.",
+				Description: "Base URL of the arrproxy deployment, e.g. https://arrproxy.example.com.",
 				Required:    true,
 				DisplayAttrs: &framework.DisplayAttributes{
 					Name: "Base URL",

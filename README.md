@@ -1,171 +1,115 @@
 # vault-plugin-secrets-arrstack
 
-A dynamic secrets engine that mints **arrproxy machine tokens** on both
-**HashiCorp Vault** and **[OpenBao](https://openbao.org)**.
+A HashiCorp Vault / OpenBao secrets engine that mints short-lived **arrproxy
+machine tokens** for the *arr apps (Sonarr, Radarr, Prowlarr).
 
-[arrproxy](https://git.unkin.net/unkin/arrproxy) fronts the *arr apps
-(Sonarr / Radarr / Prowlarr) behind a single OAuth-gated proxy that brokers
-per-caller API tokens. Its human path derives scope from OAuth identity headers,
-so a non-interactive caller cannot use it. This engine calls arrproxy's
-bearer-gated **admin API** (`/api/admin/tokens`) instead, so Terraform-driven
-*arr onboarding can mint and revoke machine tokens without a human in the loop.
+arrproxy fronts the *arr apps behind one authenticated proxy. This engine calls
+its bearer-gated admin API to mint a token per request, scoped to a subset of
+the apps (and optionally to a set of HTTP methods), and binds each token to a
+Vault lease: revoking the lease disables the token in arrproxy.
 
-Each minted token is:
+The same binary runs on Vault and OpenBao; every command below works with
+`bao` in place of `vault`.
 
-- **scoped to a subset of apps** (`apps`: any of `sonarr`, `radarr`, `prowlarr`)
-- **optionally scoped to HTTP methods** (`methods`, e.g. `GET,HEAD` for a
-  read-only consumer; empty means unrestricted)
-- **subject-namespaced** as `vault:arrstack:<role>` (arrproxy requires the prefix)
-- **bound to a Vault lease** — revoking the lease disables the token in arrproxy
+To manage the engine's mount, config, and roles from Terraform, use
+[terraform-provider-vault-secrets-arrstack](https://github.com/IUCLabs/terraform-provider-vault-secrets-arrstack).
 
-## Vault and OpenBao
+## Requirements
 
-OpenBao is a fork of Vault and keeps its plugin protocol compatible, so the
-**same plugin binary** registers and runs on either engine unchanged — the CLI
-commands below are identical apart from `vault` vs `bao`.
+- Vault or OpenBao with external plugin support (built against Vault SDK
+  v0.14.0; no other versions are tested in this repo)
+- An arrproxy instance and its admin bearer token
+- Go 1.25+ to build from source
 
-## How it works
+## Installation
 
-The backend authenticates to arrproxy's admin API with the admin bearer token
-and manages tokens through `POST /api/admin/tokens` (mint) and
-`DELETE /api/admin/tokens/{id}` (revoke). Each minted token is wrapped in a
-Vault lease, so Vault owns the token's lifecycle: revoke disables it, renew
-extends it up to the token's fixed expiry.
+Build the binary (or download one from the
+[releases page](https://github.com/IUCLabs/vault-plugin-secrets-arrstack/releases))
+and copy it into the server's plugin directory. `PLUGIN_DIR` below must match
+`plugin_directory` in the server config:
 
+```sh
+PLUGIN_DIR=/etc/vault/plugins  # set to your server's plugin_directory
+make build                     # writes ./dist/vault-plugin-secrets-arrstack
+cp dist/vault-plugin-secrets-arrstack "$PLUGIN_DIR/"
 ```
-┌────────┐  read creds/<role>  ┌────────────────────────┐  POST /api/admin/tokens  ┌──────────┐
-│ client │ ──────────────────► │ vault + arrstack plugin │ ───────────────────────► │ arrproxy │
-└────────┘  ◄── machine token ─└────────────────────────┘  ◄──── {id, token} ────── └──────────┘
+
+Register it in the plugin catalog by its SHA-256, then enable it:
+
+```sh
+SHA256=$(sha256sum "$PLUGIN_DIR/vault-plugin-secrets-arrstack" | cut -d' ' -f1)
+
+vault plugin register -sha256="$SHA256" secret vault-plugin-secrets-arrstack
+vault secrets enable -path=arrstack vault-plugin-secrets-arrstack
 ```
+
+## Configuration
+
+Point the engine at arrproxy's admin API:
+
+```sh
+vault write arrstack/config \
+  base_url=https://arrproxy.example.com \
+  admin_token="$ARRPROXY_ADMIN_TOKEN"
+```
+
+`admin_token` is never returned on read. Add `ca_cert=@ca.pem` if arrproxy's TLS
+certificate is not signed by a CA in the system trust store.
 
 ## Usage
 
+Create a role that limits which apps a token can reach and how long it lives:
+
 ```sh
-# 1. Enable the engine
-vault secrets enable -path=arrstack vault-plugin-secrets-arrstack
+vault write arrstack/roles/media apps="sonarr,radarr" ttl=1h max_ttl=24h
+```
 
-# 2. Configure the connection to arrproxy's admin API
-vault write arrstack/config \
-  base_url=https://arrstack.unkin.net \
-  admin_token=$ARRPROXY_ADMIN_TOKEN \
-  ca_cert=@traefik-external-ca.pem   # optional
+Mint a token:
 
-# 3. Define a role: which apps, what TTLs
-#    (add methods="GET,HEAD" to pin the token to those HTTP methods)
-vault write arrstack/roles/media \
-  apps="sonarr,radarr" \
-  ttl=1h \
-  max_ttl=24h
+```sh
+$ vault read arrstack/creds/media
+Key                Value
+---                -----
+lease_id           arrstack/creds/media/AbC...
+lease_duration     1h
+lease_renewable    true
+apps               [radarr sonarr]
+expires_at         2026-01-01T13:00:00Z
+id                 tok-...
+methods            []
+subject            vault:arrstack:media
+token              arr_...
+```
 
-# 4. Mint a scoped, time-limited machine token
-vault read arrstack/creds/media
-# Key           Value
-# ---           -----
-# lease_id      arrstack/creds/media/AbC...
-# lease_duration 1h
-# apps          [radarr sonarr]
-# methods       []
-# id            tok-...
-# subject       vault:arrstack:media
-# token         arr_...
+Revoke it early:
 
-# 5. Revoking the lease disables the token in arrproxy
+```sh
 vault lease revoke arrstack/creds/media/AbC...
 ```
 
-### Example roles
-
-| Role       | `apps`                        | Use                                  |
-| ---------- | ----------------------------- | ------------------------------------ |
-| `sonarr`   | `sonarr`                      | a token that only reaches Sonarr     |
-| `radarr`   | `radarr`                      | a token that only reaches Radarr     |
-| `prowlarr` | `prowlarr`                    | a token that only reaches Prowlarr   |
-| `all`      | `sonarr,radarr,prowlarr`      | a token that reaches all three apps  |
+A read-only role pins tokens to safe HTTP methods; arrproxy rejects anything
+else with `405`:
 
 ```sh
-vault write arrstack/roles/sonarr   apps="sonarr"                   ttl=1h max_ttl=24h
-vault write arrstack/roles/radarr   apps="radarr"                   ttl=1h max_ttl=24h
-vault write arrstack/roles/prowlarr apps="prowlarr"                 ttl=1h max_ttl=24h
-vault write arrstack/roles/all      apps="sonarr,radarr,prowlarr"   ttl=1h max_ttl=24h
+vault write arrstack/roles/sonarr-ro apps="sonarr" methods="GET,HEAD" ttl=1h
 ```
 
-## Paths
+## Documentation
 
-| Path             | Ops                | Description                                       |
-| ---------------- | ------------------ | ------------------------------------------------- |
-| `config`         | read/write/delete  | arrproxy connection (`base_url`, `admin_token`)   |
-| `roles/<name>`   | read/write/delete  | Constraints for minted tokens                     |
-| `roles/`         | list               | List configured roles                             |
-| `creds/<name>`   | read               | Mint a machine token for the role                 |
+Full path reference, with every parameter:
 
-### Config fields
-
-| Field                     | Type     | Description                                                          |
-| ------------------------- | -------- | ------------------------------------------------------------------- |
-| `base_url`                | string   | arrproxy base URL, e.g. `https://arrstack.unkin.net`                |
-| `admin_token`             | string   | arrproxy admin bearer token (write-only, never returned on read)    |
-| `ca_cert`                 | string   | PEM CA to verify the arrproxy TLS cert; empty uses the system store |
-| `request_timeout_seconds` | int      | HTTP timeout for admin API calls (default 30)                       |
-
-### Role fields
-
-| Field     | Type     | Description                                                         |
-| --------- | -------- | ------------------------------------------------------------------ |
-| `apps`    | list     | Non-empty subset of `sonarr`/`radarr`/`prowlarr`                   |
-| `methods` | list     | Optional HTTP methods the token is limited to; empty = unrestricted |
-| `ttl`     | duration | Default lease TTL                                                   |
-| `max_ttl` | duration | Maximum lease TTL                                                   |
-
-## Method scoping
-
-A role may pin its tokens to a set of HTTP methods, so a read-only integration
-cannot write to the *arr even on an app it is allowed to reach. Entries are
-uppercase-normalized and must name one of `GET`, `HEAD`, `POST`, `PUT`,
-`PATCH`, `DELETE`, `OPTIONS` — an unknown method is rejected at role write, not
-at mint. The scope is sent to arrproxy at mint time and enforced there: a
-request outside it is refused with `405` before any upstream *arr is reached.
-
-Leaving `methods` unset (the default) leaves the token unrestricted, exactly as
-before this field existed.
-
-```sh
-# A token that can read Sonarr but never change it.
-vault write arrstack/roles/sonarr-ro apps="sonarr" methods="GET,HEAD" ttl=1h max_ttl=24h
-
-# Drop the scope again on an existing role.
-vault write arrstack/roles/sonarr-ro methods=""
-```
-
-## TTL and renewal
-
-At mint time the effective initial lease TTL is sent to arrproxy as
-`ttl_seconds`, so the arrproxy token is given a **fixed expiry** at that point
-(`expires_at` in the mint response, which the engine stores). Because that
-expiry is fixed and arrproxy does not extend an already-issued token, a lease
-renewal can never push the lease past the token's expiry: the renew callback
-honours the role's `max_ttl` but **caps the renewed TTL at the remaining time to
-the token's expiry**, and an already-expired token is not extended. For a
-longer-lived token, issue a new one (or set a larger role `ttl`).
+- [`config`](docs/config.md) – connection to arrproxy
+- [`roles`](docs/roles.md) – token constraints
+- [`creds`](docs/creds.md) – minting, renewal, and revocation
 
 ## Development
 
 ```sh
-make build   # build the plugin into ./dist
-make test    # unit tests (race-enabled)
+make build   # build into ./dist
+make test    # unit tests
 make lint    # go vet
-make fmt     # gofmt
-make rpm     # build the binary and package the Vault + OpenBao RPMs
 ```
 
-### Releasing
+## License
 
-Versioning is tag-driven; pushing a `v*` tag runs the release pipeline, which
-builds the binary, packages the Vault (`/opt/vault-plugins`) and OpenBao
-(`/opt/openbao-plugins`) RPMs, prints the binary `sha256` for Puppet plugin
-registration, and uploads the RPMs to the artifactapi `rpm-internal` repo.
-
-```sh
-make patch   # v0.1.0 -> v0.1.1
-make minor   # v0.1.1 -> v0.2.0
-make major   # v0.2.0 -> v1.0.0
-```
+[MIT](LICENSE)

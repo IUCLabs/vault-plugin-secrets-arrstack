@@ -163,11 +163,11 @@ func TestNewClient_Validation(t *testing.T) {
 }
 
 func TestNewClient_TrimsTrailingSlash(t *testing.T) {
-	client, err := newClient(&arrstackConfig{BaseURL: "https://arrstack.unkin.net/", AdminToken: "t"})
+	client, err := newClient(&arrstackConfig{BaseURL: "https://arrproxy.example.com/", AdminToken: "t"})
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	if client.baseURL != "https://arrstack.unkin.net" {
+	if client.baseURL != "https://arrproxy.example.com" {
 		t.Fatalf("expected trailing slash trimmed, got %q", client.baseURL)
 	}
 }

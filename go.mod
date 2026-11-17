@@ -1,4 +1,4 @@
-module git.unkin.net/unkin/vault-plugin-secrets-arrstack
+module github.com/IUCLabs/vault-plugin-secrets-arrstack
 
 go 1.25.0
 

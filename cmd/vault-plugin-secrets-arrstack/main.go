@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/plugin"
 
-	arrstack "git.unkin.net/unkin/vault-plugin-secrets-arrstack"
+	arrstack "github.com/IUCLabs/vault-plugin-secrets-arrstack"
 )
 
 func main() {

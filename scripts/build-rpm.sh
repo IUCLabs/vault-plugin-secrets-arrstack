@@ -20,8 +20,8 @@ if [ ! -f "${DIST}/${BINARY}" ]; then
   exit 1
 fi
 
-# The plugin is registered in Vault/OpenBao by the sha256 of the binary, and
-# Puppet pins that same digest. Print it so the release log records it.
+# The plugin is registered in Vault/OpenBao by the sha256 of the binary.
+# Print it so the release log records it.
 SHA256="$(sha256sum "${DIST}/${BINARY}" | cut -d' ' -f1)"
 echo "PLUGIN_SHA256 ${BINARY} ${VERSION} ${SHA256}"
 
@@ -31,8 +31,8 @@ export PACKAGE_RELEASE="1"
 export PACKAGE_ARCH="amd64"
 export PACKAGE_PLATFORM="linux"
 export PACKAGE_DESCRIPTION="Vault/OpenBao dynamic secrets engine for arrproxy machine tokens"
-export PACKAGE_MAINTAINER="Ben Vincent <ben@unkin.net>"
-export PACKAGE_HOMEPAGE="https://git.unkin.net/unkin/vault-plugin-secrets-arrstack"
+export PACKAGE_MAINTAINER="IUCLabs"
+export PACKAGE_HOMEPAGE="https://github.com/IUCLabs/vault-plugin-secrets-arrstack"
 export PACKAGE_LICENSE="MIT"
 
 # build_flavor <package-name> <plugin-dir>
