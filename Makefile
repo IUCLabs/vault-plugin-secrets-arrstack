@@ -1,4 +1,4 @@
-.PHONY: build install test lint fmt clean tidy rpm rpm-package patch minor major check-go
+.PHONY: build install test lint fmt clean tidy rpm patch minor major check-go
 
 BINARY := vault-plugin-secrets-arrstack
 PKG := ./cmd/vault-plugin-secrets-arrstack
@@ -36,12 +36,8 @@ tidy:
 clean:
 	rm -rf $(PLUGIN_DIR)
 
-# Build the plugin binary then package it into an RPM with nfpm.
-rpm: build rpm-package
-
-# Package an already-built binary into an RPM (used by CI after the build step).
-rpm-package:
-	./scripts/build-rpm.sh $(VERSION)
+rpm:
+	GOTOOLCHAIN=auto go run github.com/goreleaser/goreleaser/v2@v2.20.2 release --snapshot --clean --skip=sign
 
 _LATEST := $(shell git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1)
 _BASE   := $(if $(_LATEST),$(_LATEST),v0.0.0)
